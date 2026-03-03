@@ -1,6 +1,6 @@
 [build-system]
-requires = ["setuptools"]
-build-backend = "setuptools.backends.legacy:build"
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
 
 [project]
 name = "lead-qualification-system"
@@ -27,6 +27,10 @@ dev = [
     "pytest-cov>=6.0.0",
     "httpx>=0.28.0",
 ]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["routers*", "models*", "services*", "db*", "scripts*", "tests*"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
