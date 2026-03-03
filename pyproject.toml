@@ -12,12 +12,11 @@ dependencies = [
     "sqlalchemy[asyncio]>=2.0.0",
     "asyncpg>=0.30.0",
     "alembic>=1.14.0",
-    "pydantic>=2.10.0",
     "pydantic[email]>=2.10.0",
     "pydantic-settings>=2.7.0",
     "httpx>=0.28.0",
     "python-dotenv>=1.0.0",
-    "psycopg2-binary>=2.9.0",
+    "psycopg2-binary>=2.9.0",  # required by Alembic for sync migrations
 ]
 
 [project.optional-dependencies]
