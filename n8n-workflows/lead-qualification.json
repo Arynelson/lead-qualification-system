@@ -1,0 +1,250 @@
+{
+  "name": "lead-qualification",
+  "nodes": [
+    {
+      "id": "webhook-trigger",
+      "name": "Lead Intake Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [250, 300],
+      "parameters": {
+        "path": "lead-qualification",
+        "httpMethod": "POST",
+        "responseMode": "onReceived",
+        "responseData": "allEntries"
+      }
+    },
+    {
+      "id": "apollo-enrichment",
+      "name": "Apollo Enrichment",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [500, 300],
+      "onError": "continueRegularOutput",
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.apollo.io/v1/people/match",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {"name": "Content-Type", "value": "application/json"},
+            {"name": "Cache-Control", "value": "no-cache"}
+          ]
+        },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {"name": "api_key", "value": "={{ $env.APOLLO_API_KEY }}"},
+            {"name": "email", "value": "={{ $json.body.email }}"},
+            {"name": "first_name", "value": "={{ $json.body.name.split(' ')[0] }}"},
+            {"name": "last_name", "value": "={{ $json.body.name.split(' ').slice(1).join(' ') }}"},
+            {"name": "organization_name", "value": "={{ $json.body.company }}"}
+          ]
+        }
+      }
+    },
+    {
+      "id": "set-lead-data",
+      "name": "Prepare Lead Data",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3,
+      "position": [750, 300],
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {"id": "f1", "name": "lead_id", "value": "={{ $('Lead Intake Webhook').item.json.body.lead_id }}", "type": "string"},
+            {"id": "f2", "name": "lead_email", "value": "={{ $('Lead Intake Webhook').item.json.body.email }}", "type": "string"},
+            {"id": "f3", "name": "lead_name", "value": "={{ $('Lead Intake Webhook').item.json.body.name }}", "type": "string"},
+            {"id": "f4", "name": "lead_company", "value": "={{ $('Lead Intake Webhook').item.json.body.company }}", "type": "string"},
+            {"id": "f5", "name": "lead_source", "value": "={{ $('Lead Intake Webhook').item.json.body.source }}", "type": "string"},
+            {"id": "f6", "name": "lead_message", "value": "={{ $('Lead Intake Webhook').item.json.body.message || '' }}", "type": "string"}
+          ]
+        }
+      }
+    },
+    {
+      "id": "claude-scoring",
+      "name": "Claude AI Scoring",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [1000, 300],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.anthropic.com/v1/messages",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {"name": "x-api-key", "value": "={{ $env.ANTHROPIC_API_KEY }}"},
+            {"name": "anthropic-version", "value": "2023-06-01"},
+            {"name": "content-type", "value": "application/json"}
+          ]
+        },
+        "sendBody": true,
+        "contentType": "raw",
+        "body": "={{ JSON.stringify({ model: 'claude-3-5-sonnet-20241022', max_tokens: 512, system: 'You are a B2B lead qualification expert. Score this lead against our ICP.\\n\\nICP: SaaS/fintech/healthtech/logistics/e-commerce companies, 50-500 employees, VP/Director/C-suite titles, US/UK/Canada/Australia/Western Europe.\\n\\nDisqualifiers: personal emails (gmail/hotmail/yahoo), <10 or >10000 employees, gaming/real-estate/non-profit/government, intern/student titles.\\n\\nReturn ONLY valid JSON, no markdown:\\n{\"score\":0-100,\"tier\":\"A\"|\"B\"|\"C\",\"reasoning\":\"string\",\"disqualifiers\":[],\"recommended_action\":\"immediate_outreach\"|\"follow_up\"|\"disqualify\",\"confidence\":\"high\"|\"medium\"|\"low\"}\\n\\nTier A=score>=70, B=40-69, C<40', messages: [{ role: 'user', content: 'Qualify:\\nName: ' + $json.lead_name + '\\nEmail: ' + $json.lead_email + '\\nCompany: ' + $json.lead_company + '\\nSource: ' + $json.lead_source + '\\nMessage: ' + ($json.lead_message || 'N/A') }] }) }}"
+      }
+    },
+    {
+      "id": "parse-claude-response",
+      "name": "Parse Claude Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1250, 300],
+      "parameters": {
+        "jsCode": "const content = $input.item.json.content[0].text;\nconst lead = $('Prepare Lead Data').item.json;\nconst apolloJson = $('Apollo Enrichment').item.json || {};\nconst person = apolloJson.person || {};\nconst empHistory = (person.employment_history || [])[0] || {};\nconst org = empHistory.organization || {};\nconst enriched = {\n  company_size: String(org.num_employees || 'unknown'),\n  industry: String(org.industry || 'unknown'),\n  job_title: String(person.title || 'unknown'),\n  location: String(person.city || 'unknown'),\n};\ntry {\n  const cleaned = content.replace(/```json\\n?/g, '').replace(/```\\n?/g, '').trim();\n  const parsed = JSON.parse(cleaned);\n  const score = parseInt(parsed.score);\n  const tier = score >= 70 ? 'A' : score >= 40 ? 'B' : 'C';\n  return [{ json: { ...lead, ...enriched, score, tier, reasoning: parsed.reasoning || '', disqualifiers: parsed.disqualifiers || [], recommended_action: parsed.recommended_action || 'follow_up', confidence: parsed.confidence || 'low' } }];\n} catch (e) {\n  const isPersonal = /gmail\\.com|hotmail|yahoo|outlook\\.com/.test(lead.lead_email);\n  const score = isPersonal ? 15 : 45;\n  const tier = score >= 70 ? 'A' : score >= 40 ? 'B' : 'C';\n  return [{ json: { ...lead, ...enriched, score, tier, reasoning: 'Fallback rule-based score', disqualifiers: isPersonal ? ['personal_email'] : [], recommended_action: tier === 'A' ? 'immediate_outreach' : tier === 'B' ? 'follow_up' : 'disqualify', confidence: 'low' } }];\n}"
+      }
+    },
+    {
+      "id": "save-ai-score",
+      "name": "Save AI Score to DB",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [1500, 300],
+      "onError": "continueRegularOutput",
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.FASTAPI_INTERNAL_URL + '/api/v1/leads/' + $json.lead_id + '/events' }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [{"name": "Content-Type", "value": "application/json"}]
+        },
+        "sendBody": true,
+        "contentType": "raw",
+        "body": "={{ JSON.stringify({ event_type: 'scored', payload: { score: $json.score, tier: $json.tier, reasoning: $json.reasoning, confidence: $json.confidence } }) }}"
+      }
+    },
+    {
+      "id": "route-by-tier",
+      "name": "Route by Tier",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3,
+      "position": [1750, 300],
+      "parameters": {
+        "mode": "expression",
+        "output": "={{ $json.tier === 'A' ? 0 : $json.tier === 'B' ? 1 : 2 }}"
+      }
+    },
+    {
+      "id": "slack-hot-leads",
+      "name": "Slack Hot Lead Alert",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [2000, 100],
+      "onError": "continueRegularOutput",
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.SLACK_WEBHOOK_URL }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [{"name": "Content-Type", "value": "application/json"}]
+        },
+        "sendBody": true,
+        "contentType": "raw",
+        "body": "={{ JSON.stringify({ text: ':fire: New Tier A Lead — Score ' + $json.score + '/100', blocks: [{ type: 'section', text: { type: 'mrkdwn', text: ':fire: *Tier A Lead — Score ' + $json.score + '/100*\\n*Name:* ' + $json.lead_name + '\\n*Email:* ' + $json.lead_email + '\\n*Company:* ' + $json.lead_company + '\\n*Title:* ' + $json.job_title + '\\n*Industry:* ' + $json.industry + '\\n*Employees:* ' + $json.company_size + '\\n*Reasoning:* ' + $json.reasoning + '\\n*Action:* ' + $json.recommended_action } }] }) }}"
+      }
+    },
+    {
+      "id": "queue-tier-b",
+      "name": "Queue Tier B Lead",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [2000, 300],
+      "onError": "continueRegularOutput",
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.FASTAPI_INTERNAL_URL + '/api/v1/leads/' + $json.lead_id + '/queue' }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [{"name": "Content-Type", "value": "application/json"}]
+        },
+        "sendBody": true,
+        "contentType": "raw",
+        "body": "={{ JSON.stringify({ tier: $json.tier, score: $json.score, reasoning: $json.reasoning }) }}"
+      }
+    },
+    {
+      "id": "log-tier-c",
+      "name": "Log Tier C Lead",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [2000, 500],
+      "onError": "continueRegularOutput",
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.FASTAPI_INTERNAL_URL + '/api/v1/leads/' + $json.lead_id + '/log' }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [{"name": "Content-Type", "value": "application/json"}]
+        },
+        "sendBody": true,
+        "contentType": "raw",
+        "body": "={{ JSON.stringify({ tier: $json.tier, score: $json.score }) }}"
+      }
+    },
+    {
+      "id": "log-final-event",
+      "name": "Log Final Event",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [2250, 300],
+      "onError": "continueRegularOutput",
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.FASTAPI_INTERNAL_URL + '/api/v1/leads/' + $json.lead_id + '/events' }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [{"name": "Content-Type", "value": "application/json"}]
+        },
+        "sendBody": true,
+        "contentType": "raw",
+        "body": "={{ JSON.stringify({ event_type: 'routed', payload: { tier: $json.tier, action: $json.recommended_action } }) }}"
+      }
+    }
+  ],
+  "connections": {
+    "Lead Intake Webhook": {
+      "main": [[{"node": "Apollo Enrichment", "type": "main", "index": 0}]]
+    },
+    "Apollo Enrichment": {
+      "main": [[{"node": "Prepare Lead Data", "type": "main", "index": 0}]]
+    },
+    "Prepare Lead Data": {
+      "main": [[{"node": "Claude AI Scoring", "type": "main", "index": 0}]]
+    },
+    "Claude AI Scoring": {
+      "main": [[{"node": "Parse Claude Response", "type": "main", "index": 0}]]
+    },
+    "Parse Claude Response": {
+      "main": [[{"node": "Save AI Score to DB", "type": "main", "index": 0}]]
+    },
+    "Save AI Score to DB": {
+      "main": [[{"node": "Route by Tier", "type": "main", "index": 0}]]
+    },
+    "Route by Tier": {
+      "main": [
+        [{"node": "Slack Hot Lead Alert", "type": "main", "index": 0}],
+        [{"node": "Queue Tier B Lead", "type": "main", "index": 0}],
+        [{"node": "Log Tier C Lead", "type": "main", "index": 0}]
+      ]
+    },
+    "Slack Hot Lead Alert": {
+      "main": [[{"node": "Log Final Event", "type": "main", "index": 0}]]
+    },
+    "Queue Tier B Lead": {
+      "main": [[{"node": "Log Final Event", "type": "main", "index": 0}]]
+    },
+    "Log Tier C Lead": {
+      "main": [[{"node": "Log Final Event", "type": "main", "index": 0}]]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "meta": {
+    "n8n_workflow_id": "xvELzDTdQQalTn4b",
+    "notes": "Requires env vars in n8n: APOLLO_API_KEY, ANTHROPIC_API_KEY, SLACK_WEBHOOK_URL, FASTAPI_INTERNAL_URL=http://fastapi:8000"
+  }
+}

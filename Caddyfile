@@ -1,0 +1,7 @@
+n8n.makeit.bot {
+    reverse_proxy n8n:5678
+}
+
+api.makeit.bot {
+    reverse_proxy fastapi:8000
+}

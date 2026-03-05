@@ -1,0 +1,44 @@
+{
+  "name": "lead-qualification-error-handler",
+  "nodes": [
+    {
+      "id": "error-trigger",
+      "name": "On Workflow Error",
+      "type": "n8n-nodes-base.errorTrigger",
+      "typeVersion": 1,
+      "position": [250, 300],
+      "parameters": {}
+    },
+    {
+      "id": "log-error-to-db",
+      "name": "Log Error to FastAPI",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [500, 300],
+      "onError": "continueRegularOutput",
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.FASTAPI_INTERNAL_URL + '/api/v1/errors' }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [{"name": "Content-Type", "value": "application/json"}]
+        },
+        "sendBody": true,
+        "contentType": "raw",
+        "body": "={{ JSON.stringify({ source: 'n8n-error-trigger', error_message: ($json.execution && $json.execution.error && $json.execution.error.message) || 'Unknown error', payload: { workflow_id: ($json.workflow && $json.workflow.id) || '', workflow_name: ($json.workflow && $json.workflow.name) || '', execution_id: ($json.execution && $json.execution.id) || '', last_node: ($json.execution && $json.execution.lastNodeExecuted) || '' } }) }}"
+      }
+    }
+  ],
+  "connections": {
+    "On Workflow Error": {
+      "main": [[{"node": "Log Error to FastAPI", "type": "main", "index": 0}]]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "meta": {
+    "n8n_workflow_id": "BCrOslN5U5b0beCZ",
+    "notes": "Error handler for lead-qualification workflow (ID: xvELzDTdQQalTn4b). Requires FASTAPI_INTERNAL_URL env var in n8n."
+  }
+}
